@@ -1,25 +1,31 @@
-import os
 import datetime
+import os
 
-from django.db import models
 from django.contrib.auth.models import User as DjangoUser
+from django.db import models
+from django.utils import timezone
 
 
 class Semester(models.Model):
-    id = models.CharField(max_length=8, primary_key=True)
-    current = models.BooleanField()
-    name = models.CharField(max_length=16)
+    id = models.CharField(
+        max_length=8,
+        primary_key=True,
+        help_text="Used for URLs, should match /(fa|sp)[0-9]{2}/",
+    )
+    current = models.BooleanField(
+        help_text="There should only be one current semester."
+    )
+    name = models.CharField(max_length=16, help_text="Display name")
     officers = models.ManyToManyField("Officer", through="Officership", blank=True)
     politburo = models.ManyToManyField("Politburo", through="PolitburoMembership")
     sponsors = models.ManyToManyField("Sponsor", through="Sponsorship")
-    events = models.ManyToManyField("Event", blank=True)
+    events = models.ManyToManyField("Event", blank=True, help_text="Currently unused.")
 
     def __str__(self):
         return self.name
 
 
 def person_photo_path(instance, filename):
-    # upload to MEDIA_ROOT/images/people/{first_name}_{last_name}_alt.{ext}
     filename, file_extension = os.path.splitext(filename)
     return "images/people/{0}_{1}{2}".format(
         instance.user.first_name, instance.user.last_name, file_extension
@@ -33,9 +39,18 @@ def person_photo_path_alt(instance, filename):
     )
 
 
+PERSON_HELP_TEXT = (
+    "There is one Officer object<->one Person object<->one auth.User<->one LDAP user"
+)
+
+
 class Person(models.Model):
     user = models.OneToOneField(
-        DjangoUser, on_delete=models.PROTECT, primary_key=True, to_field="username"
+        DjangoUser,
+        on_delete=models.PROTECT,
+        primary_key=True,
+        to_field="username",
+        help_text=PERSON_HELP_TEXT,
     )
     photo1 = models.ImageField(
         upload_to=person_photo_path,
@@ -50,14 +65,20 @@ class Person(models.Model):
     )
 
     def __str__(self):
-        return str(self.user)
+        return f"{self.user!s} ({self.user.first_name} {self.user.last_name})"
+
+    @property
+    def username(self):
+        return self.user.username
 
 
 # Create your models here.
 class Officer(models.Model):
-    person = models.OneToOneField(Person, on_delete=models.PROTECT, unique=True)
+    person = models.OneToOneField(
+        Person, on_delete=models.PROTECT, unique=True, help_text=PERSON_HELP_TEXT
+    )
     root_staff = models.BooleanField(default=False)
-    officer_since = models.DateField()
+    officer_since = models.DateField(null=True, blank=True)
 
     def __str__(self):
         return str(self.person)
@@ -65,10 +86,14 @@ class Officer(models.Model):
     @property
     def is_anniversary(self):
         today = datetime.date.today()
-        return (
+        return self.officer_since and (
             self.officer_since.month == today.month
             and self.officer_since.day == today.day
         )
+
+    @property
+    def username(self):
+        return self.person.username
 
 
 class Officership(models.Model):
@@ -100,7 +125,7 @@ class Politburo(models.Model):
     contact = models.TextField(max_length=255)
 
     def __str__(self):
-        return self.title
+        return f"{self.position} ({self.title})"
 
 
 class PolitburoMembership(models.Model):
@@ -113,7 +138,7 @@ class PolitburoMembership(models.Model):
         return self.politburo.contact.replace("[name]", self.person.user.first_name, 1)
 
     def __str__(self):
-        return str(self.semester) + ": " + str(self.politburo) + ": " + str(self.person)
+        return f"{self.semester}: {self.politburo.position}: {self.person.user}"
 
 
 def sponsor_photo_path(instance, filename):
@@ -144,20 +169,44 @@ class Sponsorship(models.Model):
 class Event(models.Model):
     name = models.CharField(max_length=70)
     location = models.CharField(max_length=70)
-    date = models.DateField(null=True)
-    time = models.CharField(max_length=70)
+    start_time = models.DateTimeField(null=True)
+    end_time = models.DateTimeField(null=True)
     description = models.TextField()
     link = models.URLField(blank=True)
-    category = models.ForeignKey("EventCategory", null=True, on_delete=models.PROTECT)
-
-    def __str__(self):
-        return self.name
+    category = models.ForeignKey(
+        "EventCategory",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        help_text="Currently unused.",
+    )
+    ordering = ["start_time"]
 
     @property
     def is_passed(self):
-        return self.date < datetime.date.today()
+        return self.start_time < timezone.now()
+
+    def get_start_date_and_time_string(self):
+        return self.start_time.astimezone(timezone.get_current_timezone()).strftime(
+            "%x %I:%M %p %Z"
+        )
+
+    def get_end_date_and_time_string(self):
+        return self.end_time.astimezone(timezone.get_current_timezone()).strftime(
+            "%x %I:%M %p %Z"
+        )
+
+    def __str__(self):
+        if not self.start_time:
+            return f"{self.name}"
+        return f"{self.name} ({self.get_start_date_and_time_string()})"
 
 
 class EventCategory(models.Model):
     id = models.CharField(max_length=16, primary_key=True)
     name = models.CharField(max_length=32)
+
+
+class Notice(models.Model):
+    text = models.TextField(help_text="Markdown for the text of the notice")
+    expires = models.DateField()

@@ -1,0 +1,8 @@
+{# leave this here for vim #}
+<html>
+<body>
+Somebody requested a new CSUA account using the email {{ email }}. If this was you, follow the link below:
+{% url 'newuser-remote' email=email token=token as theurl %}
+<a href=https://www.csua.berkeley.edu{{ theurl }}>https://www.csua.berkeley.edu{{ theurl }}</a>
+</body>
+</html>

@@ -1,6 +1,10 @@
 from django import forms
 from django.core.exceptions import ValidationError
 
+from apps.ldap.utils import user_exists
+
+from .utils import valid_password
+
 usernameWhitelist = set(".-_")
 
 
@@ -11,9 +15,13 @@ def validate_username_chars(value):
         )
 
 
-def validate_username_in_use(value):
-    # TODO: check if username is in use by making a simple ldap query.
-    pass
+def validate_username_not_in_use(value):
+    if user_exists(value):
+        raise ValidationError(f"Username {value} is taken")
+
+
+class RemoteEmailRequestForm(forms.Form):
+    email = forms.EmailField(label="Email")
 
 
 class NewUserForm(forms.Form):
@@ -23,12 +31,22 @@ class NewUserForm(forms.Form):
     )
     email = forms.EmailField()
     username = forms.CharField(
-        validators=[validate_username_chars, validate_username_in_use]
+        validators=[validate_username_chars, validate_username_not_in_use]
     )
     password = forms.CharField(widget=forms.PasswordInput())
-    enroll_jobs = forms.BooleanField(required=False)
+    # enroll_jobs = forms.BooleanField(required=False, label="Jobs@ List Opt-in")
+    agree_rules = forms.BooleanField(required=True)
+
+    def clean(self):
+        form_data = super().clean()
+        password = form_data.get("password")
+        if not valid_password(password):
+            raise ValidationError("Password must meet requirements")
+        return form_data
+
+
+class NewUserFormOfficerVerified(NewUserForm):
     officer_username = forms.CharField(label="Officer Username")
     officer_password = forms.CharField(
         widget=forms.PasswordInput(), label="Officer Password"
     )
-    agree_rules = forms.BooleanField(required=True)

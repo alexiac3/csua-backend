@@ -3,11 +3,11 @@
 
 
 from django.db import migrations, models
+
 from apps import db_data
 
 
 class Migration(migrations.Migration):
-
     dependencies = [("db_data", "0001_initial")]
 
     operations = [

@@ -1,105 +1,66 @@
-"""
-I wasn't able to find documentation on mocking LDAP servers that had good exaples, so I found
-https://github.com/StackFocus/PostMaster/blob/master/tests/ad/test_ad_class.py
-Which I based some of this code off of
---robertquitt
-"""
-import unittest
+import logging
 import os
-from unittest.mock import patch
-import functools
+import unittest
+from unittest.mock import Mock, patch
 
+from django.core import mail
 from django.test import TestCase
-from django.conf import settings
-import ldap3
+from django.urls import reverse
 
-from . import ldap_bindings
-from .ldap_bindings import NEWUSER_DN
+from apps.ldap.test_helpers import LDAPTestCase
+from apps.ldap.utils import email_exists
+from apps.newuser.views import newuser_script
 
-TEST_NEWUSER_PW = "ilovepnunez"
-mock_ldap_server = ldap3.Server.from_definition(
-    "",
-    os.path.join(settings.BASE_DIR, "fixtures", "csua_ldap_info.json"),
-    os.path.join(settings.BASE_DIR, "fixtures", "csua_ldap_schema.json"),
-)
+from .tokens import newuser_token_generator
 
 
-@patch("apps.newuser.ldap_bindings.LDAP_SERVER", mock_ldap_server)
-@patch("apps.newuser.ldap_bindings.LDAP_CLIENT_STRATEGY", ldap3.MOCK_SYNC)
-class LdapBindingsTest(unittest.TestCase):
+class NewUserTest(LDAPTestCase):
     """
     Tests the LDAP code by mocking the CSUA LDAP server.
+
     """
 
-    @classmethod
-    def setUpClass(self):
-        with ldap3.Connection(mock_ldap_server, client_strategy=ldap3.MOCK_SYNC) as c:
-            c.strategy.entries_from_json(
-                os.path.join(settings.BASE_DIR, "fixtures", "csua_ldap_entries.json")
-            )
-            c.strategy.add_entry(
-                "uid=test_user,ou=People,dc=csua,dc=berkeley,dc=edu",
-                {
-                    "uid": "test_user",
-                    "cn": "test_user",
-                    "uidNumber": 31337,
-                    "userPassword": "test_password",
-                    "objectClass": ["posixAccount"],
-                },
-            )
-            c.strategy.add_entry(
-                NEWUSER_DN,
-                {
-                    "uid": "newuser",
-                    "userPassword": TEST_NEWUSER_PW,
-                    "objectClass": ["posixAccount"],
-                },
-            )
+    # TODO: include tests for failure modes (newuser bind fail, config_newuser
+    # fails)
+    @patch("subprocess.run")
+    def test_remote_newuser_flow(self, subprocess_run):
+        logging.disable(logging.CRITICAL)
 
-    def test_auth(self):
-        result = ldap_bindings.authenticate("test_user", "test_password")
-        self.assertTrue(result)
-        result = ldap_bindings.authenticate("test_user", "wrong_password")
-        self.assertFalse(result)
-
-    def test_is_officer(self):
-        result = ldap_bindings.is_officer("robertq")
-        # hopefully I'll be an officer forever :3
-        self.assertTrue(result)
-
-        result = ldap_bindings.is_officer("dangengdg")
-        self.assertFalse(result)
-
-    @patch("apps.newuser.ldap_bindings.NEWUSER_PW", TEST_NEWUSER_PW)
-    def test_create_new_user(self):
-        max_uid = ldap_bindings.get_max_uid()
-        self.assertEquals(max_uid, 31337)
-
-        success, uid_num = ldap_bindings.create_new_user(
-            "pnunez",
-            "Phillip E. Nunez",
-            "pnunez@berkeley.edu",
-            3116969,
-            "il0vedangengdg!",
+        url = "/newuser/remote/"
+        email = "pnunez2@berkeley.edu"
+        resp = self.client.get(url)
+        resp = self.client.post(url, {"email": email})
+        self.assertContains(resp, "Email sent")
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, [email])
+        token_url = reverse(
+            "newuser-remote",
+            kwargs={"email": email, "token": newuser_token_generator.make_token(email)},
         )
-        self.assertTrue(success)
-        self.assertEquals(uid_num, 31338)
+        full_url = "https://www.csua.berkeley.edu" + token_url
+        self.assertIn(full_url, mail.outbox[0].body)
 
-        max_uid = ldap_bindings.get_max_uid()
-        self.assertEquals(max_uid, 31338)
+        subprocess_run.return_value.returncode = 0
+        self.assertFalse(email_exists(email))
+        resp = self.client.get(token_url)
+        resp = self.client.post(
+            token_url,
+            {
+                "full_name": "Phillip E. Nunez II",
+                "student_id": 3114201612,
+                "email": email,
+                "username": "pnunez2",
+                "password": "okPASSWORD1!",
+                "enroll_jobs": False,
+                "agree_rules": True,
+            },
+        )
+        self.assertEqual(len(subprocess_run.call_args_list), 1)
+        self.assertNotContains(resp, "failed")
+        args = subprocess_run.call_args_list[0][0][0]
+        self.assertIs(type(args), list)
+        for arg in args:
+            self.assertIs(type(arg), str)
+        self.assertTrue(email_exists(email))
 
-    # TODO: finish this
-    # def test_password(self):
-    #     test_password = "dangengdg is my Friend"
-    #     ssha_pw = ldap_bindings.make_password(test_password)
-    #     self.assertTrue(ssha_pw.startswith("{SSHA}"))
-    #     digest_salt_b64 = ssha_pw[6:]
-
-    #     digest_salt = digest_salt_b64.decode('base64')
-    #     digest = digest_salt[:20]
-    #     salt = digest_salt[20:]
-
-    #     sha = hashlib.sha1(test_password)
-    #     sha.update(salt)
-
-    #     self.assertEquals(digest, sha.digest())
+        logging.disable(logging.NOTSET)

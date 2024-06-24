@@ -3,15 +3,14 @@ Django settings for csua_backend project.
 
 For more information on this file, see
 https://docs.djangoproject.com/en/2.0/topics/settings/
-
 For the full list of settings and their values, see
 https://docs.djangoproject.com/en/2.0/ref/settings/
 """
 import os
 from pathlib import Path
 
-from decouple import config
 import ldap3
+from decouple import config
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = config("DJANGO_DEBUG", cast=bool, default=False)
@@ -186,6 +185,7 @@ TEMPLATES = [
     }
 ]
 
+
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
@@ -193,11 +193,13 @@ MIDDLEWARE = [
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
-    "django.contrib.redirects.middleware.RedirectFallbackMiddleware",
     # 'django.contrib.auth.middleware.SessionAuthenticationMiddleware',
     # Uncomment the next line for simple clickjacking protection:
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    "apps.csua_backend.middleware.TemporaryRedirectFallbackMiddleware",
+    "django.contrib.flatpages.middleware.FlatpageFallbackMiddleware",
 ]
+
 
 ROOT_URLCONF = "apps.csua_backend.urls"
 
@@ -209,6 +211,7 @@ INSTALLED_APPS = [
     "django.contrib.contenttypes",
     "django.contrib.sessions",
     "django.contrib.sites",
+    "django.contrib.flatpages",
     "django.contrib.messages",
     "django.contrib.staticfiles",
     # Uncomment the next line to enable the admin:
@@ -217,12 +220,15 @@ INSTALLED_APPS = [
     # 'django.contrib.admindocs',
     "django.contrib.redirects",
     ## Our apps
+    "apps.db_data",
+    "apps.discordbot",
+    "apps.ldap",
     "apps.main_page",
     "apps.newuser",
-    "apps.db_data",
-    "apps.tracker",
-    "apps.philbot",
     "apps.outreach",
+    "apps.password_reset",
+    "apps.slackbot",
+    "apps.tracker",
     ## Third-party
     "markdown_deux",
     "sorl.thumbnail",
@@ -231,7 +237,7 @@ INSTALLED_APPS = [
 
 SESSION_SERIALIZER = "django.contrib.sessions.serializers.JSONSerializer"
 
-ADMINS = (("Robert Quitt", "robertq@csua.berkeley.edu"),)
+ADMINS = [("Root Staff", "root@csua.berkeley.edu")]
 
 MANAGERS = ADMINS
 
@@ -239,44 +245,64 @@ DEFAULT_FROM_EMAIL = "django@csua.berkeley.edu"
 
 SERVER_EMAIL = "django-errors@csua.berkeley.edu"
 
-EMAIL_HOST = "mail.csua.berkeley.edu"
+EMAIL_HOST = "localhost"
 
-EMAIL_PORT = 25
+EMAIL_PORT = 10025
 
 EMAIL_USE_TLS = True
 
-# A sample logging configuration. The only tangible logging
-# performed by this configuration is to send an email to
-# the site admins on every HTTP 500 error when DEBUG=False.
-# See http://docs.djangoproject.com/en/dev/topics/logging for
-# more details on how to customize your logging configuration.
+if config("DJANGO_FILEBASED_EMAIL_BACKEND", cast=bool, default=False):
+    EMAIL_BACKEND = "django.core.mail.backends.filebased.EmailBackend"
+    EMAIL_FILE_PATH = os.path.join(BASE_DIR, "emails")
+
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
     "handlers": {
-        "mail_admins": {
+        "admin_mail_error": {
             "level": "ERROR",
             "class": "django.utils.log.AdminEmailHandler",
+            "include_html": True,
         },
-        "console": {"level": "DEBUG", "class": "logging.StreamHandler"},
+        "admin_mail_info": {
+            "level": "INFO",
+            "class": "django.utils.log.AdminEmailHandler",
+            "include_html": True,
+        },
+        "slack_message": {
+            "level": "DEBUG",
+            "class": "apps.slackbot.log.SlackMessageHandler",
+            "filters": ["slack_enabled"],
+            "formatter": "slack",
+        },
     },
+    "filters": {"slack_enabled": {"()": "apps.slackbot.log.enabled"}},
+    "formatters": {"slack": {"()": "apps.slackbot.log.formatter"}},
     "loggers": {
         "django.request": {
-            "handlers": ["mail_admins"],
+            "handlers": ["admin_mail_error"],
             "level": "ERROR",
             "propagate": True,
         },
-        "django.security.csrf": {
-            "handlers": ["mail_admins"],
-            "level": "ERROR",
-            "propagate": True,
-        },
-        "django.db.backends": {
-            "level": config("DJANGO_DB_DEBUG_LOG", default="ERROR"),
-            "handlers": ["console"],
+        "sorl.thumbnail": {"handlers": ["admin_mail_error"], "level": "ERROR"},
+        "apps.newuser.views": {
+            "handlers": ["admin_mail_info", "slack_message"],
+            "level": "INFO",
         },
     },
 }
+
+DEFAULT_EXCEPTION_REPORTER_FILTER = "apps.csua_backend.settings.ExceptionReporterFilter"
+
+from django.views.debug import SafeExceptionReporterFilter
+
+
+class ExceptionReporterFilter(SafeExceptionReporterFilter):
+    """By default, the filter is on when DEBUG=False, but I want to be able to test it when DEBUG=True"""
+
+    def is_active(self, request):
+        return True
+
 
 LOGIN_REDIRECT_URL = "/"
 LOGOUT_REDIRECT_URL = "/"
@@ -285,13 +311,9 @@ LOGOUT_REDIRECT_URL = "/"
 THUMBNAIL_DEBUG = DEBUG
 THUMBNAIL_BACKEND = "apps.csua_backend.thumbnail_backends.SEOThumbnailBackend"
 THUMBNAIL_PREFIX = "thumbnails"
+THUMBNAIL_COLORSPACE = None
+THUMBNAIL_PRESERVE_FORMAT = True
 
-## SLACK CONFIG ##
-SLACK_CLIENT_ID = "3311748471.437459179046"
-SLACK_CLIENT_SECRET = config("SLACK_CLIENT_SECRET", default="")
-SLACK_BOT_USER_TOKEN = config("SLACK_BOT_USER_TOKEN", default="")
-SLACK_SIGNING_SECRET = config("SLACK_SIGNING_SECRET", default="")
-SLACK_VERIFICATION_TOKEN = config("SLACK_VERIFICATION_TOKEN", default="")
 
 ## LDAP_AUTH CONFIG ##
 LDAP_AUTH_URL = "ldaps://ldap.csua.berkeley.edu"
@@ -301,15 +323,20 @@ LDAP_AUTH_USER_FIELDS = {"username": "uid", "gecos": "gecos"}
 LDAP_AUTH_USER_LOOKUP_FIELDS = ("username",)
 LDAP_AUTH_OBJECT_CLASS = "posixAccount"
 LDAP_AUTH_CLEAN_USER_DATA = "apps.csua_backend.settings.clean_ldap_user_data"
+LDAP_AUTH_CONNECT_TIMEOUT = 2
 
 STAFF_GROUPS = ("excomm", "root")
 
 
 def clean_ldap_user_data(fields):
     """
-    Path to a callable that takes a dict of {model_field_name: value}, returning a dict of clean model data.
-    Use this to customize how data loaded from LDAP is saved to the User model.
-    See django-python3-ldap docs for more info.
+    Path to a callable that takes a dict of {model_field_name: value},
+    returning a dict of clean model data.  Use this to customize how data
+    loaded from LDAP is saved to the User model.  See django-python3-ldap docs
+    for more info.
+
+    Note: gecos may be missing, or missing an email, particularly for older
+    users.
     """
     if "gecos" in fields:
         gecos = fields["gecos"].split(",")
@@ -346,6 +373,6 @@ def clean_ldap_user_data(fields):
 
 
 AUTHENTICATION_BACKENDS = [
-    "django_python3_ldap.auth.LDAPBackend",
     "django.contrib.auth.backends.ModelBackend",
+    "django_python3_ldap.auth.LDAPBackend",
 ]

@@ -1,33 +1,32 @@
+import codecs
 import datetime
+from collections import defaultdict
 
-from django.http import HttpResponse, JsonResponse
-from django.shortcuts import render, get_object_or_404
-from django.views.generic.base import TemplateView
+from django.contrib.admin.views.decorators import staff_member_required
+from django.http import HttpResponse, HttpResponseRedirect, JsonResponse
+from django.shortcuts import get_object_or_404, render
+from django.urls import reverse
 from django.views.decorators.cache import cache_page
 from django.views.decorators.http import require_safe
+from django.views.generic.base import TemplateView
 
+from apps.ldap.utils import add_officer, is_officer, is_root, user_exists
+
+from .constants import DAYS_OF_WEEK, OH_TIMES
+from .forms import OfficerCreationForm
 from .models import (
     Event,
+    Notice,
     Officer,
+    Officership,
+    Person,
     Politburo,
+    PolitburoMembership,
+    Semester,
     Sponsor,
     Sponsorship,
-    Semester,
-    Officership,
-    PolitburoMembership,
     UcbClass,
 )
-from .constants import DAYS_OF_WEEK, OH_TIMES
-
-
-class EventsView(TemplateView):
-    template_name = "events.html"
-
-    def get_context_data(request):
-        context = {}
-        semester = Semester.objects.filter(current=True).get()
-        context["events"] = semester.events.all()
-        return context
 
 
 # @cache_page(3 * 60)
@@ -57,7 +56,12 @@ def officers(request, semester_id=None):
     return render(
         request,
         "officers.html",
-        {"officer_list": officerships, "calendar": calendar, "semester": semester, "semesters": semesters},
+        {
+            "officer_list": officerships,
+            "calendar": calendar,
+            "semester": semester,
+            "semesters": semesters,
+        },
     )
 
 
@@ -77,18 +81,27 @@ def politburo(request, semester_id=None):
     return render(request, "politburo.html", {"pb": pb, "semesters": semesters})
 
 
-def sponsors(request, semester_id=None):
-    if semester_id is None:
-        semester = Semester.objects.filter(current=True).get()
-    else:
-        semester = get_object_or_404(Semester, id=semester_id)
-    semesters = Semester.objects.exclude(id=semester.id)
-    sponsorships = (
-        Sponsorship.objects.select_related("sponsor")
-        .filter(semester=semester)
-        .order_by("sponsor__name")
+def semester_ordering_key(semester):
+    return (semester.id[2:] + codecs.encode(semester.id[:2], "rot13"),)
+
+
+def sponsors(request):
+    semesters = Semester.objects.all()
+    sponsorships = Sponsorship.objects.all()
+    sponsorships_by_semester = defaultdict(list)
+    for sponsorship in sponsorships:
+        sponsorships_by_semester[sponsorship.semester].append(sponsorship)
+    sponsorships_by_semester = sorted(
+        sponsorships_by_semester.items(),
+        key=lambda pair: semester_ordering_key(pair[0]),
+        reverse=True,
     )
-    return render(request, "sponsors.html", {"sponsorships": sponsorships, "current_semester": semester, "semesters": semesters})
+    for semester, sponsorships in sponsorships_by_semester:
+        sponsorships.sort(key=lambda sponsorship: sponsorship.sponsor.name)
+
+    return render(
+        request, "sponsors.html", {"sponsorships_by_semester": sponsorships_by_semester}
+    )
 
 
 def tutoring(request, semester_id=None):
@@ -99,7 +112,6 @@ def tutoring(request, semester_id=None):
     officerships = Officership.objects.select_related("officer").filter(
         semester=semester
     )
-    print(officerships.explain())
     all_tutoring_subjects = UcbClass.objects.all()
     tutors_by_subject = {}
     for subject in all_tutoring_subjects:

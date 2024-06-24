@@ -25,11 +25,11 @@ html, body {
 	min-height: 100vh;
 	background-color: var(--bg);
 }
-#navbar, .navbar-menu {
+#navbar, .navbar-menu, #navMenu {
 	background-color: var(--base03);
 }
-#navbar .navbar-link, .navbar-item,.navbar-dropdown {
-	border-top-color: var(--base02);
+#navbar .navbar-link, #navbar .navbar-item, #navbar .navbar-dropdown {
+	border-top-color: var(--base03);
 	background-color: var(--base03);
 	color: var(--base0);
 }
@@ -42,6 +42,10 @@ html, body {
 }
 .navbar-link:not(.is-arrowless)::after {
 	border-color: var(--base01);
+}
+#notices {
+	color: var(--base00);
+	background-color: white;
 }
 #content {
 	flex: 1 0 auto;
